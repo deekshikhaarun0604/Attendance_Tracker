@@ -223,6 +223,14 @@
                                         <tr><td colspan="5" class="text-center text-muted py-3">No recent attendance recorded today.</td></tr>
                                     </tbody>
                                 </table>
+                    <!-- Faculty Timetable & Assignments Card (Visible for Faculty) -->
+                    <div class="col-12 d-none" id="facultyAssignmentsCard">
+                        <div class="cream-card">
+                            <div class="card-title-custom">
+                                <i class="bi bi-calendar2-range"></i> My Assigned Classes & Timetable
+                            </div>
+                            <div id="facultyTimetableContainer">
+                                <div class="text-muted small">Loading assignments...</div>
                             </div>
                         </div>
                     </div>
@@ -637,6 +645,35 @@
                 </div>
             </section>
 
+            <!-- VIEW: FACULTY MANAGEMENT & ASSIGNMENTS -->
+            <section id="view-faculty" class="app-view d-none">
+                <div class="cream-card">
+                    <div class="card-title-custom">
+                        <i class="bi bi-person-workspace"></i> Faculty Class & Timetable Assignments
+                    </div>
+                    <p class="text-muted small mb-3">
+                        Manage faculty profiles, assigned subjects, and authorized classes. Faculty members can only start attendance sessions for their assigned classes.
+                    </p>
+                    <div class="table-responsive">
+                        <table class="table table-custom table-hover align-middle mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Faculty Name</th>
+                                    <th>Employee ID</th>
+                                    <th>Department</th>
+                                    <th>Email</th>
+                                    <th>Assigned Classes</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="facultyTableBody">
+                                <tr><td colspan="6" class="text-center py-4 text-muted">Loading faculty profiles...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
             <!-- VIEW 8: REPORTS & ANALYTICS -->
             <section id="view-reports" class="app-view d-none">
                 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -816,6 +853,48 @@
                         <div class="d-flex justify-content-end gap-2">
                             <button type="button" class="btn btn-cream" data-bs-dismiss="modal">Cancel</button>
                             <button type="submit" class="btn btn-primary-blue">Open Session</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal 3: Assign Faculty Classes & Subjects -->
+    <div class="modal fade" id="assignFacultyModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header bg-primary text-white" style="background-color: var(--primary-blue) !important;">
+                    <h5 class="modal-title"><i class="bi bi-person-gear me-2"></i>Assign Classes & Subjects</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="assignFacultyForm" onsubmit="app.handleSaveFacultyAssignments(event)">
+                        <input type="hidden" id="assignFacultyId">
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Faculty Member</label>
+                            <input type="text" id="assignFacultyName" class="form-control" readonly disabled>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Department</label>
+                            <input type="text" id="assignFacultyDept" class="form-control" readonly disabled>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Assigned Classes *</label>
+                            <input type="text" id="assignFacultyClasses" class="form-control" placeholder="e.g. CSE-3-A, CSE-3-B" required>
+                            <div class="form-text text-muted">
+                                Comma-separated class codes (e.g. <code>CSE-3-A, CSE-3-B</code> or <code>Computer Science-3-A</code>). Faculty can only start attendance sessions for these classes.
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Assigned Subjects</label>
+                            <div id="assignFacultySubjectsContainer" class="p-2 border rounded" style="max-height: 150px; overflow-y: auto;">
+                                <!-- Checkboxes populated dynamically -->
+                            </div>
+                        </div>
+                        <div class="d-flex justify-content-end gap-2">
+                            <button type="button" class="btn btn-cream" data-bs-dismiss="modal">Cancel</button>
+                            <button type="submit" class="btn btn-primary-blue">Save Assignments</button>
                         </div>
                     </form>
                 </div>

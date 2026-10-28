@@ -84,17 +84,21 @@ public class WebSecurityConfig {
                                 "/vendor/**",
                                 "/assets/**",
                                 "/favicon.ico",
-                                "/api/auth/**",
-                                "/api/dev/**"
+                                "/api/auth/**"
                         ).permitAll()
-                        // Admin-only management endpoints
+                        // Dev endpoints protected by ADMIN role
+                        .requestMatchers("/api/dev/**").hasRole("ADMIN")
+                        // Admin-only student management & faculty assignment endpoints
                         .requestMatchers(HttpMethod.POST, "/api/students/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PUT, "/api/students/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.DELETE, "/api/students/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.PUT, "/api/faculty/**").hasRole("ADMIN")
                         // Attendance session creation & live scanner: FACULTY or ADMIN
                         .requestMatchers("/api/attendance/sessions/**").hasAnyRole("FACULTY", "ADMIN")
                         .requestMatchers("/api/attendance/scan").hasAnyRole("FACULTY", "ADMIN")
                         .requestMatchers("/api/attendance/manual").hasAnyRole("FACULTY", "ADMIN")
+                        // Student-specific personal portal endpoint
+                        .requestMatchers("/api/student/me/**").hasRole("STUDENT")
                         // All other API endpoints require authentication
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().permitAll()

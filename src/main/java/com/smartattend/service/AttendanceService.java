@@ -53,8 +53,8 @@ public class AttendanceService {
 
         // Populate Faculty Info
         if (request.getFacultyId() != null) {
+            session.setFacultyId(request.getFacultyId());
             facultyRepository.findById(request.getFacultyId()).ifPresent(fac -> {
-                session.setFacultyId(fac.getId());
                 session.setFacultyName(fac.getFacultyName());
             });
         }
@@ -311,60 +311,80 @@ public class AttendanceService {
         Student student = studentRepository.findById(studentId)
                 .orElseThrow(() -> new IllegalArgumentException("Student not found"));
 
+        // 1. Find all eligible attendance sessions conducted for this student's class (department, year, section)
+        List<AttendanceSession> eligibleSessions = sessionRepository.findByDepartmentAndYearOfStudyAndSection(
+                student.getDepartment(), student.getYearOfStudy(), student.getSection()
+        );
+        long totalEligibleConducted = eligibleSessions.size();
+
+        // 2. Find student's attendance records
         List<AttendanceRecord> records = recordRepository.findByStudentIdOrderByRecordedAtDesc(studentId);
-        long totalRecorded = records.size();
-        long presentCount = records.stream().filter(r -> "PRESENT".equalsIgnoreCase(r.getAttendanceStatus())).count();
-        long absentCount = totalRecorded - presentCount;
+        long presentCount = records.stream()
+                .filter(r -> "PRESENT".equalsIgnoreCase(r.getAttendanceStatus()))
+                .count();
+        long absentCount = Math.max(0, totalEligibleConducted - presentCount);
 
-        double overallPercentage = totalRecorded > 0 ? (presentCount * 100.0) / totalRecorded : 100.0;
+        boolean hasAttendanceData = (totalEligibleConducted > 0);
+        Double overallPercentage = null;
+        if (hasAttendanceData) {
+            overallPercentage = Math.round((presentCount * 1000.0) / totalEligibleConducted) / 10.0;
+        }
 
-        // Subject-wise grouping
-        Map<String, long[]> subjectCounts = new HashMap<>(); // subjectId -> [present, total]
+        // 3. Subject-wise breakdown based on conducted eligible sessions for each subject
+        Map<String, long[]> subjectStats = new HashMap<>(); // subjectId -> [present, eligibleConducted]
+
+        for (AttendanceSession sess : eligibleSessions) {
+            String subId = sess.getSubjectId() != null ? sess.getSubjectId() : "GEN";
+            long[] stats = subjectStats.computeIfAbsent(subId, k -> new long[2]);
+            stats[1]++; // increment conducted count for subject
+        }
+
         for (AttendanceRecord r : records) {
-            String subId = r.getSubjectId() != null ? r.getSubjectId() : "GEN";
-            long[] counts = subjectCounts.computeIfAbsent(subId, k -> new long[2]);
-            counts[1]++;
             if ("PRESENT".equalsIgnoreCase(r.getAttendanceStatus())) {
-                counts[0]++;
+                String subId = r.getSubjectId() != null ? r.getSubjectId() : "GEN";
+                long[] stats = subjectStats.computeIfAbsent(subId, k -> new long[2]);
+                stats[0]++; // increment attended count for subject
             }
         }
 
         List<Map<String, Object>> subjectBreakdown = new ArrayList<>();
-        for (Map.Entry<String, long[]> entry : subjectCounts.entrySet()) {
+        for (Map.Entry<String, long[]> entry : subjectStats.entrySet()) {
             Map<String, Object> subMap = new HashMap<>();
+            String subId = entry.getKey();
             String subName = "Subject";
-            String subCode = entry.getKey();
-            Optional<Subject> subOpt = subjectRepository.findById(entry.getKey());
+            String subCode = subId;
+            Optional<Subject> subOpt = subjectRepository.findById(subId);
             if (subOpt.isPresent()) {
                 subName = subOpt.get().getSubjectName();
                 subCode = subOpt.get().getSubjectCode();
             }
             long p = entry.getValue()[0];
             long t = entry.getValue()[1];
-            double pct = t > 0 ? (p * 100.0) / t : 0.0;
-            subMap.put("subjectId", entry.getKey());
+            double pct = t > 0 ? Math.round((p * 1000.0) / t) / 10.0 : 0.0;
+            subMap.put("subjectId", subId);
             subMap.put("subjectCode", subCode);
             subMap.put("subjectName", subName);
             subMap.put("present", p);
             subMap.put("total", t);
-            subMap.put("percentage", Math.round(pct * 10.0) / 10.0);
+            subMap.put("percentage", pct);
             subjectBreakdown.add(subMap);
         }
 
-        // Classes needed to reach 75% threshold
-        // Formula: (present + x) / (total + x) >= 0.75 => x >= (0.75 * total - present) / 0.25
+        // 4. Classes needed to reach 75% target threshold
         long classesNeeded = 0;
-        if (overallPercentage < 75.0 && totalRecorded > 0) {
-            classesNeeded = Math.max(0, (long) Math.ceil((0.75 * totalRecorded - presentCount) / 0.25));
+        if (overallPercentage != null && overallPercentage < 75.0 && totalEligibleConducted > 0) {
+            classesNeeded = Math.max(1, (long) Math.ceil((0.75 * totalEligibleConducted - presentCount) / 0.25));
         }
 
         Map<String, Object> summary = new HashMap<>();
         summary.put("student", student);
-        summary.put("totalClasses", totalRecorded);
+        summary.put("totalClasses", totalEligibleConducted);
         summary.put("presentClasses", presentCount);
         summary.put("absentClasses", absentCount);
-        summary.put("overallPercentage", Math.round(overallPercentage * 10.0) / 10.0);
-        summary.put("isLowAttendance", overallPercentage < 75.0);
+        summary.put("hasAttendanceData", hasAttendanceData);
+        summary.put("overallPercentage", overallPercentage != null ? overallPercentage : 0.0);
+        summary.put("displayPercentage", hasAttendanceData ? (overallPercentage + "%") : "No attendance data yet");
+        summary.put("isLowAttendance", overallPercentage != null && overallPercentage < 75.0);
         summary.put("classesNeededFor75", classesNeeded);
         summary.put("subjectBreakdown", subjectBreakdown);
         summary.put("recentRecords", records.size() > 10 ? records.subList(0, 10) : records);

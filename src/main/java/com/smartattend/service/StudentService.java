@@ -1,11 +1,15 @@
 package com.smartattend.service;
 
 import com.smartattend.dto.StudentRequest;
+import com.smartattend.model.Role;
 import com.smartattend.model.Student;
+import com.smartattend.model.User;
 import com.smartattend.repository.StudentRepository;
+import com.smartattend.repository.UserRepository;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -19,10 +23,17 @@ import java.util.Optional;
 public class StudentService {
 
     private final StudentRepository studentRepository;
+    private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
     private final MongoTemplate mongoTemplate;
 
-    public StudentService(StudentRepository studentRepository, MongoTemplate mongoTemplate) {
+    public StudentService(StudentRepository studentRepository,
+                          UserRepository userRepository,
+                          PasswordEncoder passwordEncoder,
+                          MongoTemplate mongoTemplate) {
         this.studentRepository = studentRepository;
+        this.userRepository = userRepository;
+        this.passwordEncoder = passwordEncoder;
         this.mongoTemplate = mongoTemplate;
     }
 
@@ -76,7 +87,32 @@ public class StudentService {
         student.setCreatedAt(Instant.now());
         student.setUpdatedAt(Instant.now());
 
-        return studentRepository.save(student);
+        Student saved = studentRepository.save(student);
+
+        // Auto-provision student user login account with their registerNumber
+        if (!userRepository.existsByUsername(saved.getRegisterNumber())) {
+            User studentUser = new User(
+                    saved.getRegisterNumber(),
+                    passwordEncoder.encode("Student@123"),
+                    Role.ROLE_STUDENT,
+                    saved.getStudentName(),
+                    saved.getEmail()
+            );
+            studentUser.setLinkedStudentId(saved.getId());
+            studentUser.setCreatedAt(Instant.now());
+            studentUser.setUpdatedAt(Instant.now());
+            userRepository.save(studentUser);
+        }
+
+        // Link default 'student' account if not yet linked
+        userRepository.findByUsername("student").ifPresent(defaultUser -> {
+            if (defaultUser.getLinkedStudentId() == null) {
+                defaultUser.setLinkedStudentId(saved.getId());
+                userRepository.save(defaultUser);
+            }
+        });
+
+        return saved;
     }
 
     public Student registerBarcode(String studentId, String barcodeValue) {
@@ -159,7 +195,15 @@ public class StudentService {
         }
         student.setUpdatedAt(Instant.now());
 
-        return studentRepository.save(student);
+        Student updated = studentRepository.save(student);
+        userRepository.findByLinkedStudentId(id).ifPresent(u -> {
+            u.setFullName(updated.getStudentName());
+            u.setEmail(updated.getEmail());
+            u.setUsername(updated.getRegisterNumber());
+            userRepository.save(u);
+        });
+
+        return updated;
     }
 
     public Student toggleStatus(String id) {
@@ -173,6 +217,7 @@ public class StudentService {
     public void deleteStudent(String id) {
         Student student = studentRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Student not found"));
+        userRepository.findByLinkedStudentId(id).ifPresent(userRepository::delete);
         studentRepository.delete(student);
     }
 

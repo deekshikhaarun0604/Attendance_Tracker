@@ -10,13 +10,22 @@ import com.smartattend.model.Subject;
 import com.smartattend.repository.*;
 import com.smartattend.service.AttendanceService;
 import com.smartattend.service.StudentService;
+import com.smartattend.controller.AttendanceController;
+import com.smartattend.model.Faculty;
+import com.smartattend.security.UserDetailsImpl;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -30,6 +39,9 @@ public class SmartAttendanceApplicationTests {
     private AttendanceService attendanceService;
 
     @Autowired
+    private AttendanceController attendanceController;
+
+    @Autowired
     private StudentRepository studentRepository;
 
     @Autowired
@@ -40,6 +52,9 @@ public class SmartAttendanceApplicationTests {
 
     @Autowired
     private SubjectRepository subjectRepository;
+
+    @Autowired
+    private FacultyRepository facultyRepository;
 
     @BeforeEach
     void setUp() {
@@ -187,5 +202,166 @@ public class SmartAttendanceApplicationTests {
         attendanceService.closeSession(session.getId());
         AttendanceScanResult resultClosed = attendanceService.processScan(scanReq);
         assertEquals(AttendanceScanResult.Outcome.SESSION_CLOSED, resultClosed.getOutcome());
+    }
+
+    @Test
+    void testStudentAttendancePercentageCalculationAndZeroState() {
+        // Create student in Computer Science Year 3 Section A
+        StudentRequest req = new StudentRequest();
+        req.setStudentName("Calculation Test Student");
+        req.setRegisterNumber("REG-CALC-001");
+        req.setStudentId("STU-CALC-001");
+        req.setDepartment("Computer Science");
+        req.setAcademicYear("2024-2028");
+        req.setYearOfStudy(3);
+        req.setSection("A");
+        req.setEmail("calc.student@college.edu");
+        req.setBarcodeValue("CALC-BARCODE-001");
+
+        Student student = studentService.addStudent(req);
+
+        // 1. Zero conducted sessions state
+        Map<String, Object> zeroSummary = attendanceService.getStudentAttendanceSummary(student.getId());
+        assertEquals(false, zeroSummary.get("hasAttendanceData"), "Should indicate no attendance data when 0 conducted sessions");
+        assertEquals("No attendance data yet", zeroSummary.get("displayPercentage"));
+        assertEquals(0.0, zeroSummary.get("overallPercentage"));
+        assertEquals(0L, ((Number) zeroSummary.get("totalClasses")).longValue());
+
+        // 2. Conduct 4 eligible sessions for Computer Science Year 3 Sec A
+        Subject subject = subjectRepository.findAll().stream().findFirst().orElseGet(() ->
+                subjectRepository.save(new Subject("CS301", "Data Structures", "Computer Science", 5, 3))
+        );
+
+        CreateSessionRequest sess1 = new CreateSessionRequest();
+        sess1.setSubjectId(subject.getId()); sess1.setDepartment("Computer Science"); sess1.setYearOfStudy(3); sess1.setSection("A");
+        AttendanceSession s1 = attendanceService.createSession(sess1, "Dr. Sarah");
+
+        CreateSessionRequest sess2 = new CreateSessionRequest();
+        sess2.setSubjectId(subject.getId()); sess2.setDepartment("Computer Science"); sess2.setYearOfStudy(3); sess2.setSection("A");
+        AttendanceSession s2 = attendanceService.createSession(sess2, "Dr. Sarah");
+
+        CreateSessionRequest sess3 = new CreateSessionRequest();
+        sess3.setSubjectId(subject.getId()); sess3.setDepartment("Computer Science"); sess3.setYearOfStudy(3); sess3.setSection("A");
+        AttendanceSession s3 = attendanceService.createSession(sess3, "Dr. Sarah");
+
+        CreateSessionRequest sess4 = new CreateSessionRequest();
+        sess4.setSubjectId(subject.getId()); sess4.setDepartment("Computer Science"); sess4.setYearOfStudy(3); sess4.setSection("A");
+        AttendanceSession s4 = attendanceService.createSession(sess4, "Dr. Sarah");
+
+        // 3. Mark student present in exactly 3 of the 4 sessions (s1, s2, s3)
+        attendanceService.processScan(new AttendanceScanRequest(s1.getId(), "CALC-BARCODE-001"));
+        attendanceService.processScan(new AttendanceScanRequest(s2.getId(), "CALC-BARCODE-001"));
+        attendanceService.processScan(new AttendanceScanRequest(s3.getId(), "CALC-BARCODE-001"));
+        // Absent in s4
+
+        // 4. Verify exactly 3 of 4 = 75.0%
+        Map<String, Object> summary = attendanceService.getStudentAttendanceSummary(student.getId());
+        assertEquals(true, summary.get("hasAttendanceData"));
+        assertEquals(4L, ((Number) summary.get("totalClasses")).longValue());
+        assertEquals(3L, ((Number) summary.get("presentClasses")).longValue());
+        assertEquals(1L, ((Number) summary.get("absentClasses")).longValue());
+        assertEquals(75.0, (Double) summary.get("overallPercentage"), 0.001, "3 of 4 conducted sessions must equal exactly 75.0%");
+        assertEquals("75.0%", summary.get("displayPercentage"));
+        assertEquals(false, summary.get("isLowAttendance"), "75.0% satisfies threshold, so isLowAttendance must be false");
+    }
+
+    @Test
+    void testStudentDataIsolation() {
+        // Register Student A
+        StudentRequest reqA = new StudentRequest();
+        reqA.setStudentName("Student Alice");
+        reqA.setRegisterNumber("REG-ISO-A");
+        reqA.setStudentId("STU-ISO-A");
+        reqA.setDepartment("Computer Science");
+        reqA.setAcademicYear("2024-2028");
+        reqA.setYearOfStudy(3);
+        reqA.setSection("A");
+        reqA.setEmail("alice.iso@college.edu");
+        Student studentA = studentService.addStudent(reqA);
+
+        // Register Student B
+        StudentRequest reqB = new StudentRequest();
+        reqB.setStudentName("Student Bob");
+        reqB.setRegisterNumber("REG-ISO-B");
+        reqB.setStudentId("STU-ISO-B");
+        reqB.setDepartment("Computer Science");
+        reqB.setAcademicYear("2024-2028");
+        reqB.setYearOfStudy(3);
+        reqB.setSection("A");
+        reqB.setEmail("bob.iso@college.edu");
+        Student studentB = studentService.addStudent(reqB);
+
+        // Mock UserDetails for Student A
+        UserDetailsImpl studentAUser = new UserDetailsImpl(
+                "user-a-id", "REG-ISO-A", "pwd", "Student Alice", "alice.iso@college.edu",
+                "ROLE_STUDENT", studentA.getId(), null, true,
+                List.of(new SimpleGrantedAuthority("ROLE_STUDENT"))
+        );
+
+        // Student A accesses own profile via /student/{id} -> 200 OK
+        ResponseEntity<?> respOwn = attendanceController.getStudentAttendance(studentA.getId(), studentAUser);
+        assertEquals(HttpStatus.OK, respOwn.getStatusCode());
+
+        // Student A accesses own profile via /student/me -> 200 OK
+        ResponseEntity<?> respMe = attendanceController.getMyAttendance(studentAUser);
+        assertEquals(HttpStatus.OK, respMe.getStatusCode());
+
+        // Student A attempts to access Student B's profile -> 403 FORBIDDEN
+        ResponseEntity<?> respOther = attendanceController.getStudentAttendance(studentB.getId(), studentAUser);
+        assertEquals(HttpStatus.FORBIDDEN, respOther.getStatusCode(), "Student A must be forbidden from accessing Student B's attendance");
+    }
+
+    @Test
+    void testFacultyAssignmentValidation() {
+        Subject subject = subjectRepository.findAll().stream().findFirst().orElseGet(() ->
+                subjectRepository.save(new Subject("CS301", "Data Structures", "Computer Science", 5, 3))
+        );
+
+        // Setup Faculty assigned specifically to CSE-3-A
+        Faculty faculty = facultyRepository.findByEmployeeId("EMP-TEST-FAC").orElseGet(() ->
+                new Faculty("EMP-TEST-FAC", "Prof. Alan Turing", "Computer Science", "turing@college.edu", "9998887770")
+        );
+        faculty.setAssignedClasses(List.of("CSE-3-A"));
+        faculty = facultyRepository.save(faculty);
+
+        UserDetailsImpl facultyUser = new UserDetailsImpl(
+                "fac-user-id", "faculty_turing", "pwd", "Prof. Alan Turing", "turing@college.edu",
+                "ROLE_FACULTY", null, faculty.getId(), true,
+                List.of(new SimpleGrantedAuthority("ROLE_FACULTY"))
+        );
+
+        UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken(
+                facultyUser, null, facultyUser.getAuthorities()
+        );
+        SecurityContextHolder.getContext().setAuthentication(auth);
+
+        try {
+            // 1. Authorized class: Computer Science, Year 3, Section A -> SUCCESS (201 Created)
+            CreateSessionRequest reqValid = new CreateSessionRequest();
+            reqValid.setSubjectId(subject.getId());
+            reqValid.setDepartment("Computer Science");
+            reqValid.setYearOfStudy(3);
+            reqValid.setSection("A");
+            reqValid.setSessionDate(LocalDate.now());
+
+            ResponseEntity<?> respValid = attendanceController.createSession(reqValid, facultyUser);
+            assertEquals(HttpStatus.CREATED, respValid.getStatusCode());
+            assertTrue(respValid.getBody() instanceof AttendanceSession);
+            AttendanceSession session = (AttendanceSession) respValid.getBody();
+            assertEquals(faculty.getId(), session.getFacultyId());
+
+            // 2. Unauthorized class: Electronics, Year 4, Section A -> FORBIDDEN (403)
+            CreateSessionRequest reqInvalid = new CreateSessionRequest();
+            reqInvalid.setSubjectId(subject.getId());
+            reqInvalid.setDepartment("Electronics");
+            reqInvalid.setYearOfStudy(4);
+            reqInvalid.setSection("A");
+            reqInvalid.setSessionDate(LocalDate.now());
+
+            ResponseEntity<?> respInvalid = attendanceController.createSession(reqInvalid, facultyUser);
+            assertEquals(HttpStatus.FORBIDDEN, respInvalid.getStatusCode(), "Faculty must be rejected when opening session for unassigned class");
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
     }
 }

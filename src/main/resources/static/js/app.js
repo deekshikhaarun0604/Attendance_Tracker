@@ -189,6 +189,9 @@ class SmartAttendApp {
                 <button class="nav-item-btn" id="nav-sessions" onclick="app.navigate('sessions')">
                     <i class="bi bi-calendar-event"></i> Attendance Sessions
                 </button>
+                <button class="nav-item-btn" id="nav-faculty" onclick="app.navigate('faculty')">
+                    <i class="bi bi-person-workspace"></i> Faculty & Timetable
+                </button>
                 <button class="nav-item-btn" id="nav-anomalies" onclick="app.navigate('anomalies')">
                     <i class="bi bi-shield-exclamation text-danger"></i> Fraud & Anomaly Alerts
                 </button>
@@ -246,6 +249,7 @@ class SmartAttendApp {
         else if (viewName === 'register-barcode') this.loadPendingBarcodeTable();
         else if (viewName === 'scan-attendance') this.prepareAttendanceScannerView();
         else if (viewName === 'sessions') this.loadSessionsTable();
+        else if (viewName === 'faculty') this.loadFacultyTable();
         else if (viewName === 'anomalies') this.loadAnomaliesTable();
         else if (viewName === 'reports') this.loadReportsView();
         else if (viewName === 'student-portal') this.loadStudentPortal();
@@ -305,6 +309,63 @@ class SmartAttendApp {
                 `).join('');
             } else {
                 actBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">No recent attendance recorded yet today.</td></tr>';
+            }
+
+            // Faculty Assignments & Timetable Card
+            const facCard = document.getElementById('facultyAssignmentsCard');
+            const facContainer = document.getElementById('facultyTimetableContainer');
+            if (this.currentUser && this.currentUser.role === 'ROLE_FACULTY') {
+                if (facCard) facCard.classList.remove('d-none');
+                try {
+                    const myAssign = await this.apiGet('/api/faculty/me/assignments');
+                    if (myAssign.hasAssignments) {
+                        const classesBadges = (myAssign.assignedClasses || []).map(c => 
+                            `<span class="badge bg-primary me-2 mb-1 fs-6 p-2"><i class="bi bi-mortarboard me-1"></i>${c}</span>`
+                        ).join('');
+
+                        let timetableHtml = '';
+                        if (myAssign.timetable && myAssign.timetable.length > 0) {
+                            timetableHtml = `
+                                <div class="table-responsive mt-3">
+                                    <table class="table table-sm table-bordered align-middle">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th>Day</th><th>Time</th><th>Subject</th><th>Class</th><th>Room</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            ${myAssign.timetable.map(t => `
+                                                <tr>
+                                                    <td><strong>${t.dayOfWeek}</strong></td>
+                                                    <td>${t.startTime} - ${t.endTime}</td>
+                                                    <td>${t.subjectCode} (${t.subjectName})</td>
+                                                    <td>${t.department} Yr ${t.yearOfStudy} (${t.section})</td>
+                                                    <td>${t.room || 'Room 101'}</td>
+                                                </tr>
+                                            `).join('')}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            `;
+                        }
+
+                        facContainer.innerHTML = `
+                            <div class="mb-2"><strong>Assigned Authorized Classes:</strong></div>
+                            <div class="d-flex flex-wrap mb-2">${classesBadges || '<span class="text-muted">None</span>'}</div>
+                            ${timetableHtml}
+                        `;
+                    } else {
+                        facContainer.innerHTML = `
+                            <div class="alert alert-info py-2 mb-0">
+                                <i class="bi bi-info-circle me-1"></i> ${myAssign.message || 'No classes or timetable assigned yet. Please contact the college administrator.'}
+                            </div>
+                        `;
+                    }
+                } catch (facErr) {
+                    if (facContainer) facContainer.innerHTML = '<div class="text-muted small">Could not load timetable assignments.</div>';
+                }
+            } else if (facCard) {
+                facCard.classList.add('d-none');
             }
         } catch (e) {
             console.error('Failed to load dashboard statistics:', e);
@@ -785,8 +846,39 @@ class SmartAttendApp {
     }
 
     async openCreateSessionModal() {
-        // Load subjects dropdown
         try {
+            // Check faculty assignment restrictions
+            if (this.currentUser && this.currentUser.role === 'ROLE_FACULTY') {
+                const myAssign = await this.apiGet('/api/faculty/me/assignments');
+                if (!myAssign.hasAssignments || !myAssign.assignedClasses || myAssign.assignedClasses.length === 0) {
+                    alert('You have no classes assigned yet. Please contact the administrator before creating an attendance session.');
+                    return;
+                }
+                // Pre-fill department, year, section from first assigned class if available
+                const firstClass = myAssign.assignedClasses[0]; // e.g. "CSE-3-A"
+                if (firstClass) {
+                    const parts = firstClass.split('-');
+                    if (parts.length >= 3) {
+                        const deptMap = { 'CSE': 'Computer Science', 'IT': 'Information Technology', 'ECE': 'Electronics', 'EC': 'Electronics' };
+                        const targetDept = deptMap[parts[0].toUpperCase()] || parts[0];
+                        const deptSelect = document.getElementById('newSessionDept');
+                        if (deptSelect) {
+                            for (let opt of deptSelect.options) {
+                                if (opt.value.toLowerCase().includes(targetDept.toLowerCase()) || targetDept.toLowerCase().includes(opt.value.toLowerCase())) {
+                                    deptSelect.value = opt.value;
+                                    break;
+                                }
+                            }
+                        }
+                        const yearSelect = document.getElementById('newSessionYear');
+                        if (yearSelect) yearSelect.value = parts[1];
+                        const secSelect = document.getElementById('newSessionSection');
+                        if (secSelect) secSelect.value = parts[2].toUpperCase();
+                    }
+                }
+            }
+
+            // Load subjects dropdown
             const subjects = await this.apiGet('/api/attendance/subjects');
             const select = document.getElementById('newSessionSubject');
             select.innerHTML = subjects.map(sub => 
@@ -794,7 +886,7 @@ class SmartAttendApp {
             ).join('');
             new bootstrap.Modal(document.getElementById('createSessionModal')).show();
         } catch (e) {
-            alert('Failed to load subjects: ' + e.message);
+            alert('Failed to load session modal: ' + e.message);
         }
     }
 
@@ -849,6 +941,94 @@ class SmartAttendApp {
             alert(`Session: ${session.sessionCode}\nClass: ${session.department} Year ${session.yearOfStudy} (${session.section})\nPresent: ${summary.presentCount} / ${summary.enrolledCount} (${summary.attendancePercentage}%)\nAbsent: ${summary.absentCount}`);
         } catch (e) {
             alert('Error loading session summary: ' + e.message);
+        }
+    }
+
+    // ==========================================================================
+    // VIEW: FACULTY & TIMETABLE ASSIGNMENTS
+    // ==========================================================================
+    async loadFacultyTable() {
+        try {
+            const facultyList = await this.apiGet('/api/faculty');
+            const tbody = document.getElementById('facultyTableBody');
+            if (!facultyList || facultyList.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center py-4 text-muted">No faculty members found.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = facultyList.map(f => {
+                const classesBadges = (f.assignedClasses && f.assignedClasses.length > 0)
+                    ? f.assignedClasses.map(c => `<span class="badge bg-primary me-1">${c}</span>`).join('')
+                    : '<span class="badge bg-warning text-dark">No Classes Assigned</span>';
+
+                return `
+                    <tr>
+                        <td class="fw-semibold">${f.facultyName}</td>
+                        <td><code>${f.employeeId}</code></td>
+                        <td>${f.department}</td>
+                        <td>${f.email}</td>
+                        <td>${classesBadges}</td>
+                        <td class="text-end">
+                            <button class="btn btn-sm btn-outline-primary" onclick="app.openAssignFacultyModal('${f.id}')">
+                                <i class="bi bi-pencil-square me-1"></i> Edit Assignments
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        } catch (e) {
+            console.error('Error loading faculty list:', e);
+            document.getElementById('facultyTableBody').innerHTML = `<tr><td colspan="6" class="text-danger text-center">Failed to load faculty: ${e.message}</td></tr>`;
+        }
+    }
+
+    async openAssignFacultyModal(facultyId) {
+        try {
+            const faculty = await this.apiGet(`/api/faculty/${facultyId}`);
+            const subjects = await this.apiGet('/api/attendance/subjects');
+
+            document.getElementById('assignFacultyId').value = faculty.id;
+            document.getElementById('assignFacultyName').value = faculty.facultyName;
+            document.getElementById('assignFacultyDept').value = faculty.department;
+            document.getElementById('assignFacultyClasses').value = (faculty.assignedClasses || []).join(', ');
+
+            const container = document.getElementById('assignFacultySubjectsContainer');
+            const currentSubIds = new Set(faculty.assignedSubjectIds || []);
+
+            container.innerHTML = subjects.map(s => `
+                <div class="form-check">
+                    <input class="form-check-input assign-subj-checkbox" type="checkbox" value="${s.id}" id="sub_${s.id}" ${currentSubIds.has(s.id) ? 'checked' : ''}>
+                    <label class="form-check-label" for="sub_${s.id}">
+                        <strong>${s.subjectCode}</strong> - ${s.subjectName} (${s.department})
+                    </label>
+                </div>
+            `).join('');
+
+            new bootstrap.Modal(document.getElementById('assignFacultyModal')).show();
+        } catch (e) {
+            alert('Failed to load faculty details: ' + e.message);
+        }
+    }
+
+    async handleSaveFacultyAssignments(event) {
+        event.preventDefault();
+        const facultyId = document.getElementById('assignFacultyId').value;
+        const classesRaw = document.getElementById('assignFacultyClasses').value;
+        const classes = classesRaw.split(',').map(s => s.trim()).filter(s => s.length > 0);
+
+        const checkedSubjects = Array.from(document.querySelectorAll('.assign-subj-checkbox:checked')).map(cb => cb.value);
+
+        try {
+            await this.apiPut(`/api/faculty/${facultyId}/assignments`, {
+                assignedClasses: classes,
+                assignedSubjectIds: checkedSubjects
+            });
+
+            bootstrap.Modal.getInstance(document.getElementById('assignFacultyModal')).hide();
+            this.notify('Faculty assignments updated successfully!', 'success');
+            this.loadFacultyTable();
+        } catch (e) {
+            alert('Error updating assignments: ' + e.message);
         }
     }
 
@@ -975,34 +1155,44 @@ class SmartAttendApp {
     // VIEW 9: STUDENT PERSONAL PORTAL
     // ==========================================================================
     async loadStudentPortal() {
-        const studentId = this.currentUser.linkedStudentId;
-        if (!studentId) {
-            // Find student profile if username is student
-            try {
-                const students = await this.apiGet('/api/students');
-                if (students.length > 0) {
-                    this.renderStudentPortalData(students[0].id);
+        try {
+            const summary = await this.apiGet('/api/attendance/student/me');
+            this.renderStudentPortalSummary(summary);
+        } catch (e) {
+            console.error('Failed to load my attendance via /api/attendance/student/me:', e);
+            if (this.currentUser && this.currentUser.linkedStudentId) {
+                try {
+                    const summary = await this.apiGet(`/api/attendance/student/${this.currentUser.linkedStudentId}`);
+                    this.renderStudentPortalSummary(summary);
+                } catch (fallbackErr) {
+                    this.notify('Could not load student profile: ' + fallbackErr.message, 'danger');
                 }
-            } catch (e) {
-                console.error(e);
+            } else {
+                this.notify('No student record is linked to this account.', 'warning');
             }
-            return;
         }
-        this.renderStudentPortalData(studentId);
     }
 
-    async renderStudentPortalData(studentId) {
-        try {
-            const summary = await this.apiGet(`/api/attendance/student/${studentId}`);
-            const student = summary.student;
+    renderStudentPortalSummary(summary) {
+        if (!summary || !summary.student) return;
+        const student = summary.student;
 
-            document.getElementById('studentPortalName').innerText = student.studentName;
-            document.getElementById('studentPortalRegNo').innerText = `${student.registerNumber} (${student.department} Yr ${student.yearOfStudy})`;
-            document.getElementById('studentPortalPercentage').innerText = summary.overallPercentage + '%';
+        document.getElementById('studentPortalName').innerText = student.studentName;
+        document.getElementById('studentPortalRegNo').innerText = `${student.registerNumber} (${student.department} Yr ${student.yearOfStudy})`;
 
-            const statusBadge = document.getElementById('studentPortalStatusBadge');
-            const warnBox = document.getElementById('studentPortalThresholdWarning');
+        const percentageEl = document.getElementById('studentPortalPercentage');
+        const statusBadge = document.getElementById('studentPortalStatusBadge');
+        const warnBox = document.getElementById('studentPortalThresholdWarning');
 
+        if (!summary.hasAttendanceData || summary.totalClasses === 0) {
+            percentageEl.innerText = 'No attendance data yet';
+            percentageEl.style.fontSize = '1.75rem';
+            statusBadge.className = 'small fw-bold text-muted';
+            statusBadge.innerText = 'No Attendance Sessions Conducted Yet';
+            warnBox.classList.add('d-none');
+        } else {
+            percentageEl.innerText = summary.overallPercentage + '%';
+            percentageEl.style.fontSize = '';
             if (summary.isLowAttendance) {
                 statusBadge.className = 'small fw-bold text-danger';
                 statusBadge.innerText = 'Attendance Shortage (< 75%)';
@@ -1013,33 +1203,40 @@ class SmartAttendApp {
                 statusBadge.innerText = 'Good Attendance Standing';
                 warnBox.classList.add('d-none');
             }
+        }
 
-            // Subject breakdown
-            const body = document.getElementById('studentPortalSubjectsBody');
-            if (summary.subjectBreakdown && summary.subjectBreakdown.length > 0) {
-                body.innerHTML = summary.subjectBreakdown.map(sub => `
-                    <tr>
-                        <td><code>${sub.subjectCode}</code></td>
-                        <td class="fw-semibold">${sub.subjectName}</td>
-                        <td>${sub.present} / ${sub.total}</td>
-                        <td>
-                            <div class="d-flex align-items-center gap-2">
-                                <div class="progress flex-grow-1" style="height: 8px;">
-                                    <div class="progress-bar ${sub.percentage >= 75 ? 'bg-success' : 'bg-danger'}" style="width: ${sub.percentage}%"></div>
-                                </div>
-                                <span class="small fw-bold">${sub.percentage}%</span>
+        // Subject breakdown
+        const body = document.getElementById('studentPortalSubjectsBody');
+        if (summary.subjectBreakdown && summary.subjectBreakdown.length > 0) {
+            body.innerHTML = summary.subjectBreakdown.map(sub => `
+                <tr>
+                    <td><code>${sub.subjectCode}</code></td>
+                    <td class="fw-semibold">${sub.subjectName}</td>
+                    <td>${sub.present} / ${sub.total}</td>
+                    <td>
+                        <div class="d-flex align-items-center gap-2">
+                            <div class="progress flex-grow-1" style="height: 8px;">
+                                <div class="progress-bar ${sub.percentage >= 75 ? 'bg-success' : 'bg-danger'}" style="width: ${sub.percentage}%"></div>
                             </div>
-                        </td>
-                        <td>
-                            <span class="badge ${sub.percentage >= 75 ? 'bg-success' : 'bg-danger'}">
-                                ${sub.percentage >= 75 ? 'ELIGIBLE' : 'SHORTAGE'}
-                            </span>
-                        </td>
-                    </tr>
-                `).join('');
-            } else {
-                body.innerHTML = '<tr><td colspan="5" class="text-center py-3 text-muted">No subject attendance recorded yet.</td></tr>';
-            }
+                            <span class="small fw-bold">${sub.percentage}%</span>
+                        </div>
+                    </td>
+                    <td>
+                        <span class="badge ${sub.percentage >= 75 ? 'bg-success' : 'bg-danger'}">
+                            ${sub.percentage >= 75 ? 'ELIGIBLE' : 'SHORTAGE'}
+                        </span>
+                    </td>
+                </tr>
+            `).join('');
+        } else {
+            body.innerHTML = '<tr><td colspan="5" class="text-center py-3 text-muted">No subject attendance recorded yet.</td></tr>';
+        }
+    }
+
+    async renderStudentPortalData(studentId) {
+        try {
+            const summary = await this.apiGet(`/api/attendance/student/${studentId}`);
+            this.renderStudentPortalSummary(summary);
         } catch (e) {
             console.error('Error loading student portal data:', e);
         }

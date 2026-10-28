@@ -7,6 +7,7 @@ import com.smartattend.dto.ManualAttendanceRequest;
 import com.smartattend.model.AttendanceAnomaly;
 import com.smartattend.model.AttendanceRecord;
 import com.smartattend.model.AttendanceSession;
+import com.smartattend.model.Faculty;
 import com.smartattend.model.Subject;
 import com.smartattend.repository.AttendanceSessionRepository;
 import com.smartattend.repository.SubjectRepository;
@@ -31,15 +32,45 @@ public class AttendanceController {
     private final AttendanceSessionRepository sessionRepository;
     private final SubjectRepository subjectRepository;
     private final AnomalyService anomalyService;
+    private final com.smartattend.repository.StudentRepository studentRepository;
+    private final com.smartattend.repository.FacultyRepository facultyRepository;
 
     public AttendanceController(AttendanceService attendanceService,
                                 AttendanceSessionRepository sessionRepository,
                                 SubjectRepository subjectRepository,
-                                AnomalyService anomalyService) {
+                                AnomalyService anomalyService,
+                                com.smartattend.repository.StudentRepository studentRepository,
+                                com.smartattend.repository.FacultyRepository facultyRepository) {
         this.attendanceService = attendanceService;
         this.sessionRepository = sessionRepository;
         this.subjectRepository = subjectRepository;
         this.anomalyService = anomalyService;
+        this.studentRepository = studentRepository;
+        this.facultyRepository = facultyRepository;
+    }
+
+    @GetMapping("/student/me")
+    public ResponseEntity<?> getMyAttendance(@AuthenticationPrincipal UserDetailsImpl user) {
+        String studentId = user.getLinkedStudentId();
+        if (studentId == null && user.getUsername() != null) {
+            studentRepository.findByRegisterNumber(user.getUsername()).ifPresent(s -> {
+                // found by register number
+            });
+            var sOpt = studentRepository.findByRegisterNumber(user.getUsername());
+            if (sOpt.isPresent()) {
+                studentId = sOpt.get().getId();
+            }
+        }
+        if (studentId == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("error", "No student profile is linked to this account."));
+        }
+        try {
+            Map<String, Object> summary = attendanceService.getStudentAttendanceSummary(studentId);
+            return ResponseEntity.ok(summary);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", e.getMessage()));
+        }
     }
 
     @PostMapping("/sessions")
@@ -49,11 +80,71 @@ public class AttendanceController {
             @AuthenticationPrincipal UserDetailsImpl user
     ) {
         try {
+            if ("ROLE_FACULTY".equalsIgnoreCase(user.getRole())) {
+                Faculty faculty = null;
+                if (user.getLinkedFacultyId() != null) {
+                    faculty = facultyRepository.findById(user.getLinkedFacultyId()).orElse(null);
+                }
+                if (faculty == null && user.getEmail() != null) {
+                    faculty = facultyRepository.findByEmail(user.getEmail()).orElse(null);
+                }
+                if (faculty == null) {
+                    faculty = facultyRepository.findAll().stream().findFirst().orElse(null);
+                }
+
+                if (faculty == null || faculty.getAssignedClasses() == null || faculty.getAssignedClasses().isEmpty()) {
+                    return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
+                            "error", "No classes are assigned to your faculty profile. Please contact the administrator."
+                    ));
+                }
+
+                if (!isClassAssigned(faculty, request.getDepartment(), request.getYearOfStudy(), request.getSection())) {
+                    return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
+                            "error", "You are not assigned to conduct attendance for " + request.getDepartment() + " Year " + request.getYearOfStudy() + " (" + request.getSection() + ")."
+                    ));
+                }
+
+                request.setFacultyId(faculty.getId());
+            }
+
             AttendanceSession session = attendanceService.createSession(request, user.getFullName());
             return ResponseEntity.status(HttpStatus.CREATED).body(session);
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", e.getMessage()));
         }
+    }
+
+    private boolean isClassAssigned(Faculty faculty, String dept, int year, String sec) {
+        if (faculty == null || faculty.getAssignedClasses() == null || faculty.getAssignedClasses().isEmpty()) {
+            return false;
+        }
+        String dNorm = dept.toLowerCase().replaceAll("[^a-z0-9]", "");
+        String sNorm = sec.toLowerCase().trim();
+        String yStr = String.valueOf(year);
+
+        for (String ac : faculty.getAssignedClasses()) {
+            if (ac == null || ac.isBlank()) continue;
+            String norm = ac.toLowerCase().replaceAll("[^a-z0-9]", "");
+            
+            boolean yearMatches = norm.contains(yStr);
+            boolean secMatches = norm.endsWith(sNorm) || norm.contains("-" + sNorm) || norm.contains(sNorm);
+            
+            boolean deptMatches = false;
+            if (dNorm.contains("computer") || dNorm.contains("cse")) {
+                deptMatches = norm.contains("cse") || norm.contains("computer");
+            } else if (dNorm.contains("information") || dNorm.contains("it")) {
+                deptMatches = norm.contains("it") || norm.contains("information");
+            } else if (dNorm.contains("electronic") || dNorm.contains("ece") || dNorm.contains("ec")) {
+                deptMatches = norm.contains("ec") || norm.contains("electronic");
+            } else {
+                deptMatches = norm.contains(dNorm) || dNorm.contains(norm);
+            }
+
+            if (deptMatches && yearMatches && secMatches) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @GetMapping("/sessions")
@@ -62,6 +153,14 @@ public class AttendanceController {
             @AuthenticationPrincipal UserDetailsImpl user
     ) {
         if ("ROLE_FACULTY".equalsIgnoreCase(user.getRole())) {
+            String facId = user.getLinkedFacultyId();
+            if (facId == null && user.getEmail() != null) {
+                facId = facultyRepository.findByEmail(user.getEmail()).map(Faculty::getId).orElse(null);
+            }
+            if (facId != null) {
+                List<AttendanceSession> sessions = sessionRepository.findByFacultyIdOrderByCreatedAtDesc(facId);
+                return ResponseEntity.ok(sessions);
+            }
             return ResponseEntity.ok(sessionRepository.findByFacultyIdOrderByCreatedAtDesc(user.getId()));
         }
         if (status != null && !status.isEmpty()) {
@@ -121,7 +220,13 @@ public class AttendanceController {
     ) {
         // Enforce role-based security: students can only access their own records
         if ("ROLE_STUDENT".equalsIgnoreCase(user.getRole())) {
-            if (user.getLinkedStudentId() == null || !user.getLinkedStudentId().equals(studentId)) {
+            boolean isOwnRecord = (user.getLinkedStudentId() != null && user.getLinkedStudentId().equals(studentId));
+            if (!isOwnRecord && user.getUsername() != null) {
+                isOwnRecord = studentRepository.findById(studentId)
+                        .filter(s -> s.getRegisterNumber().equalsIgnoreCase(user.getUsername()))
+                        .isPresent();
+            }
+            if (!isOwnRecord) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN)
                         .body(Map.of("error", "Access denied: You can only view your own attendance records."));
             }
